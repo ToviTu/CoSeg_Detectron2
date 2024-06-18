@@ -3,20 +3,23 @@ MODEL:
   N_DECODER: 6
   N_ENCODER: 3
   N_HEAD: 4
-  D_REDUCE: 64
+  D_REDUCE: 128
   LANG_MODEL: "xatten"
   MAX_SEQ_LEN: 20
+  TEMPERATURE: 0.08
+  BETA: 0.05
+  ALPHA: 0.05
 DATASETS:
   TRAIN: ("coco_2017_train_stuff_all_sem_seg",)
 INPUT:
-  IGNORE_VALUE: 255
+  IGNORE_VALUE: 171
   CROP:
     SINGLE_CATEGORY_MAX_AREA: 1.0
     SIZE: !!python/tuple [224, 224]
     TYPE: "absolute"
   MIN_SIZE_TRAIN: !!python/tuple [224]
   MIN_SIZE_TRAIN_SAMPLING: "choice"
-  MAX_SIZE_TRAIN: 800
+  MAX_SIZE_TRAIN: 2000
   FORMAT: "RGB"
 VERSION: 2
 CUDNN_BENCHMARK: True

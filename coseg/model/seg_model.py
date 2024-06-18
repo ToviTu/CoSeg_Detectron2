@@ -1,9 +1,10 @@
 import torch.nn.functional as F
 from torch import nn
 import torch
+import numpy as np
 
 class CLIPSegDecoder(nn.Module):
-    def __init__(self, d_image=512, d_text=512, d_reduce=64, nhead=4):
+    def __init__(self, d_image=768, d_text=512, d_reduce=64, nhead=4):
         super().__init__()
 
         self.reduces = nn.ModuleList([
@@ -36,11 +37,14 @@ class CLIPSegDecoder(nn.Module):
         )
 
     def forward(self, lang_output, hidden_states):
+        # Image sequence size
+        self.image_seq_size = int(np.sqrt(hidden_states[0].shape[1]))
+        
         masks = []
         for i, batch_embeddings in enumerate(lang_output.permute(1, 0, 2)):
             a  = None
             for hs, block, reduce in zip(hidden_states, self.decoder, self.reduces):
-                hs = hs.permute(1, 0, 2)
+                hs = hs[:,1:,:].permute(1, 0, 2)
                 if a is None:
                     a = reduce(hs)
                 else:
@@ -49,10 +53,10 @@ class CLIPSegDecoder(nn.Module):
                 a = a * self.film_mul(batch_embeddings) + self.film_add(batch_embeddings)
                 a = block(a)
 
-            a = a[1:].permute(1, 2, 0)
-            a = a.view(a.shape[0], a.shape[1], 7, 7)
+            a = a.permute(1, 2, 0)
+            a = a.view(a.shape[0], a.shape[1], self.image_seq_size, self.image_seq_size)
             a = self.mask_head(a)
             masks.append(a)
 
         masks = torch.cat(masks, dim=1)
-        return masks, self.encoders.label_head(lang_output)
+        return masks, lang_output

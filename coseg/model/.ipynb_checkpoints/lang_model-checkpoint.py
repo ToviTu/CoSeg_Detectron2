@@ -1,6 +1,17 @@
+from transformers import CLIPVisionModelWithProjection, CLIPTextModelWithProjection
 import torch.nn.functional as F
 from torch import nn
 import torch
+
+class CLIPLang(nn.Module):
+    def __init__(self, clip_version="openai/clip-vit-base-patch16"):
+        super().__init__()
+        self.clip_version = clip_version
+        self.text_model = CLIPTextModelWithProjection.from_pretrained(clip_version)
+
+    def forward(self, **args):
+        # text_embedding -> text_embeddings
+        return self.text_model(**args)#['pooler_output']
 
 class CLIPLang_xatten(nn.Module):
 
@@ -13,23 +24,24 @@ class CLIPLang_xatten(nn.Module):
         super().__init__()
 
         vision_model = CLIPVisionModelWithProjection.from_pretrained(clip_version)
-        text_model = CLIPTextModelWithProjection.from_pretrained(clip_version)
 
         # vision model
         self.vision_encoder = vision_model.vision_model
         self.vision_projector = vision_model.visual_projection
 
-        # text model
-        self.text_model = text_model.text_model
-        self.text_projector = text_model.text_projection
-
         # internal dimensions
-        self.d_text = self.text_model.embeddings.token_embedding.weight.shape[1]
+        self.d_text = 512
         self.d_image = self.vision_encoder.embeddings.position_embedding.weight.shape[1]
 
         # Learnable embeddings
         self.query_embeddings = nn.Embedding(20, self.d_text)
+        # Optinal: initialize query embeddings from [CLS] embedding
+        self.class_embedding = self.vision_encoder.embeddings.class_embedding
         self.query_embeddings.weight.data.normal_(mean=0, std=0.02)
+
+        # Positional Embeddings
+        num_positions = self.vision_encoder.embeddings.position_embedding.weight.shape[0] + 20
+        self.position_embedding = nn.Embedding(num_positions, self.d_text)
 
         # transformer for next label prediction
         self.decoder = nn.Transformer(
@@ -41,21 +53,13 @@ class CLIPLang_xatten(nn.Module):
             batch_first = True
         )
 
-    def to_embedding(self, input_ids):
-        # index -> text_embeddings
-        return self.text_model.embeddings.token_embedding(input_ids)
-
     def position_encode(self, embeddings):
         index_tensor = torch.arange(embeddings.shape[1]).repeat(embeddings.shape[0], 1).to(embeddings.device)
-        return embeddings + self.text_model.embeddings.position_embedding(index_tensor)
+        return embeddings + self.position_embedding(index_tensor)
 
     def visual_forward(self, pixel_values, output_hidden_states=False):
         # image -> text_embeddings
         return self.vision_encoder(pixel_values, output_hidden_states=output_hidden_states)
-
-    def text_forward(self, text_embeddings):
-        # text_embedding -> text_embeddings
-        return self.text_model.encoder(text_embeddings)
 
     def decoder_forward(self, img_src, txt_tgt):
         # Send image seq and text seq to lang model

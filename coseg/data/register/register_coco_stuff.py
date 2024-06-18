@@ -212,7 +212,7 @@ def register_all_coco_stuff_10k(root):
             image_root=image_dir,
             sem_seg_root=gt_dir,
             evaluator_type="sem_seg",
-            ignore_label=255,
+            ignore_label=len(meta['stuff_classes']),
             **meta,
         )
 

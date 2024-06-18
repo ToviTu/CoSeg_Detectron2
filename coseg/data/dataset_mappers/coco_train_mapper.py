@@ -105,7 +105,7 @@ class TrainMapper:
         # Form the final mask sequence
         masks = torch.stack(masks, dim=0)
 
-        dataset_dict['ids'] = ids
+        dataset_dict['ids'] = torch.tensor(ids, dtype=torch.long)
         dataset_dict['image'] = image
         dataset_dict['masks'] = masks
         dataset_dict['width'], dataset_dict['height'] = image.shape[-2:]
