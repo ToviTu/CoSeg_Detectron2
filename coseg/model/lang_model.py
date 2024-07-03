@@ -40,7 +40,7 @@ class CLIPLang_xatten(nn.Module):
         self.query_embeddings.weight.data.normal_(mean=0, std=0.02)
 
         # Positional Embeddings
-        num_positions = self.vision_encoder.embeddings.position_embedding.weight.shape[0] + 20
+        num_positions = 20
         self.position_embedding = nn.Embedding(num_positions, self.d_text)
 
         # transformer for next label prediction
@@ -59,7 +59,9 @@ class CLIPLang_xatten(nn.Module):
 
     def visual_forward(self, pixel_values, output_hidden_states=False):
         # image -> text_embeddings
-        return self.vision_encoder(pixel_values, output_hidden_states=output_hidden_states)
+        x = self.vision_encoder(pixel_values, output_hidden_states=output_hidden_states)
+        #x['last_hidden_state'] = self.vision_encoder.post_layernorm(x['last_hidden_state'])
+        return x
 
     def decoder_forward(self, img_src, txt_tgt):
         # Send image seq and text seq to lang model

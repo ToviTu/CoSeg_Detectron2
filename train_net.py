@@ -23,15 +23,42 @@ from detectron2.evaluation import (
     SemSegEvaluator,
     verify_results,
 )
-from detectron2.modeling import GeneralizedRCNNWithTTA, build_model
+from detectron2.modeling import build_model
 from detectron2.utils.logger import setup_logger
 from detectron2.projects.deeplab import add_deeplab_config, build_lr_scheduler
+from detectron2.utils.events import get_event_storage
 
 import coseg
-from coseg.model.lang_model import CLIPLang
-from transformers import CLIPProcessor
-from coseg.data.dataset_mappers import TrainMapper
+from coseg.data.dataset_mappers import TrainMapper, MaskFormerSemanticDatasetMapper
+import wandb
+import torch.distributed as dist
+import yaml
 
+class WandbHook(hooks.HookBase):
+
+    def __init__(self):
+        self.enable = self.is_main_process()
+
+    def is_main_process(self):
+        return not dist.is_initialized() or dist.get_rank() == 0
+
+    @property
+    def iter(self):
+        if hasattr(self, '_iter'):
+            self._iter += 1
+        else:
+            self._iter = 0
+        return self._iter
+
+
+    def after_step(self):
+        if self.enable:                    
+            storage = get_event_storage()
+            metrics = storage.latest()
+            metrics = {k:v[0] for k,v in metrics.items()}
+
+            if self.iter % 10 == 0:
+                wandb.log(metrics)
 
 def build_evaluator(cfg, dataset_name, output_folder=None):
     """
@@ -89,7 +116,7 @@ class Trainer(DefaultTrainer):
     def build_train_loader(self, cfg):
         return build_detection_train_loader(
                 cfg,
-                mapper=TrainMapper(cfg, True),
+                mapper=MaskFormerSemanticDatasetMapper(cfg, True),
             )
     
     @classmethod
@@ -108,19 +135,11 @@ class Trainer(DefaultTrainer):
         logger.info("Model:\n{}".format(model))
 
         # Register vocabulary
-        lang_model = CLIPLang().eval()
-        processor = CLIPProcessor.from_pretrained(lang_model.clip_version)
-        
         meta = MetadataCatalog.get(cfg.DATASETS.TRAIN[0])
         labels = meta.stuff_classes
         labels = [f"a photo of a {label}" for label in labels]
         labels.append('unlabeled')
-        inputs = processor(labels, padding=True, return_tensors='pt')
-        with torch.no_grad():
-            label_embeddings = lang_model(**inputs)['text_embeds']
-        label_embeddings.requires_grad_(False)
-        model.register_vocabulary(label_embeddings)
-        del lang_model
+        model.register_vocabulary(labels)
         
         return model
 
@@ -240,7 +259,6 @@ def setup(args):
     default_setup(cfg, args)
     return cfg
 
-
 def main(args):
     cfg = setup(args)
     torch.set_float32_matmul_precision("high")
@@ -263,6 +281,12 @@ def main(args):
     #     trainer.register_hooks(
     #         [hooks.EvalHook(0, lambda: trainer.test_with_TTA(cfg, trainer.model))]
     #     )
+    if cfg.WANDB.ENABLE:
+        wandb.init(project="coseg")
+        with open(args.config_file, 'r') as f:
+            config = yaml.load(f, Loader=yaml.FullLoader)
+        wandb.config.update(config)
+        trainer.register_hooks([WandbHook()])
     return trainer.train()
 
 

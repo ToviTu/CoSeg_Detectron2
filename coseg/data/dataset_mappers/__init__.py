@@ -1,1 +1,2 @@
 from .coco_train_mapper import TrainMapper
+from .mask_former_semantic_dataset_mapper import MaskFormerSemanticDatasetMapper

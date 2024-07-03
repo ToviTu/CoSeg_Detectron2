@@ -179,6 +179,7 @@ COCO_CATEGORIES = [
     {"id": 180, "name": "window-blind", "supercategory": "window"},
     {"id": 181, "name": "window-other", "supercategory": "window"},
     {"id": 182, "name": "wood", "supercategory": "solid"},
+    #{"id": 183, "name": "unlabeled"},
 ]
 
 
@@ -212,7 +213,7 @@ def register_all_coco_stuff_10k(root):
             image_root=image_dir,
             sem_seg_root=gt_dir,
             evaluator_type="sem_seg",
-            ignore_label=len(meta['stuff_classes']),
+            ignore_label=255, #len(meta['stuff_classes']),
             **meta,
         )
 
