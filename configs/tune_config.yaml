@@ -8,9 +8,9 @@ MODEL:
   D_REDUCE: 128
   LANG_MODEL: "xatten"
   MAX_SEQ_LEN: 20
-  TEMPERATURE: 0.08
-  BETA: 0.18
-  ALPHA: 0.08
+  TEMPERATURE: 0.8
+  BETA: 1.8
+  ALPHA: 0.8
 DATASETS:
   TRAIN: ("coco_2017_train_stuff_all_sem_seg",)
   TEST: ("coco_2017_test_stuff_all_sem_seg",)
@@ -52,6 +52,6 @@ DATALOADER:
   NUM_WORKERS: 4
 WANDB:
   ENABLE: True
-  NAME: "detectron2_short"
+  NAME: "detectron2_short_tune"
 VERSION: 2
 CUDNN_BENCHMARK: True

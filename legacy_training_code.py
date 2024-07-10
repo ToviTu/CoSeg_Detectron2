@@ -19,12 +19,18 @@ import os
 import numpy as np
 from torch.optim import AdamW
 from torch.utils.data import DataLoader
-from torch.optim.lr_scheduler import CosineAnnealingLR, StepLR
+from torch.optim.lr_scheduler import CosineAnnealingLR, StepLR, _LRScheduler
 import tqdm
+import math
+import time
+import glob
 
 from coseg.model.model import CoSeg
 from coseg.model.legacy_model import CoSeg_legacy
 from coseg.model.lang_model import CLIPLang
+
+from accelerate import Accelerator
+import wandb
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
@@ -149,6 +155,23 @@ def collate_fn_factory(processor, max_size=20):
 
     return collate_fn
 
+class WarmupCosineLR(_LRScheduler):
+    def __init__(self, optimizer, warmup_epochs, total_epochs, eta_min=0, last_epoch=-1):
+        self.warmup_epochs = warmup_epochs
+        self.total_epochs = total_epochs
+        self.eta_min = eta_min
+        super(WarmupCosineLR, self).__init__(optimizer, last_epoch)
+    
+    def get_lr(self):
+        if self.last_epoch < self.warmup_epochs:
+            # Warmup phase
+            warmup_factor = (self.last_epoch + 1) / self.warmup_epochs
+            return [base_lr * warmup_factor for base_lr in self.base_lrs]
+        else:
+            # Cosine decay phase
+            cosine_decay = 0.5 * (1 + math.cos(math.pi * (self.last_epoch - self.warmup_epochs) / (self.total_epochs - self.warmup_epochs)))
+            return [self.eta_min + (base_lr - self.eta_min) * cosine_decay for base_lr in self.base_lrs]
+        
 """## Training Pipeline"""
 
 def dice_loss(y_true, y_pred):
@@ -156,148 +179,180 @@ def dice_loss(y_true, y_pred):
     denominator = torch.sum(y_true + y_pred)
     return 1 - numerator / denominator
 
-device = 0
+def train():
+    # Init accelerator
+    accelerator = Accelerator()
+    device = accelerator.device
 
-# Define dataset dir
-dataset_dir = "/scratch/t.tovi/datasets/"
+    # Define dataset dir
+    dataset_dir = "/scratch/t.tovi/datasets/"
 
-# Create dataset object
-data = COCOStuffDataset(
-    dataset_dir+image_dir,
-    dataset_dir+annotation_dir,
-    img_size=224
-)
+    # Create dataset object
+    data = COCOStuffDataset(
+        dataset_dir+image_dir,
+        dataset_dir+annotation_dir,
+        img_size=224
+    )
 
-lang_model = CLIPLang()
-lang_model.eval()
-processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch16")
+    lang_model = CLIPLang()
+    lang_model.eval()
+    processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch16")
 
-# Get loss query table
+    # Get loss query table
 
-labels = data.digit_to_object_mapping
+    labels = data.digit_to_object_mapping
 
-label_indices = list(data.digit_to_object_mapping.keys())
-label_text = ["a photo of " + data.digit_to_object_mapping[each] for each in label_indices]
-inputs = processor(label_text, padding=True, return_tensors='pt')
+    label_indices = list(data.digit_to_object_mapping.keys())
+    label_text = ["a photo of " + data.digit_to_object_mapping[each] for each in label_indices]
+    inputs = processor(label_text, padding=True, return_tensors='pt')
 
-with torch.no_grad():
-    label_embeddings = lang_model(**inputs)["text_embeds"]
-label_embeddings.requires_grad_(False)
+    with torch.no_grad():
+        label_embeddings = lang_model(**inputs)["text_embeds"]
+    label_embeddings.requires_grad_(False)
 
-reverse_mapping = {v: k for k, v in data.digit_to_object_mapping.items()}
+    reverse_mapping = {v: k for k, v in data.digit_to_object_mapping.items()}
 
-# Get the collate function
+    # Get the collate function
 
-collate_fn = collate_fn_factory(processor)
+    collate_fn = collate_fn_factory(processor)
 
-# Create batch data loader
-data_loader = DataLoader(data, batch_size=32, collate_fn=collate_fn, num_workers=4, shuffle=True)
+    # Create batch data loader
+    data_loader = DataLoader(data, batch_size=32, collate_fn=collate_fn, num_workers=4, shuffle=True)
 
-# Initialize the model
-model = CoSeg_legacy(d_reduce=128, nencoder=4, ndecoder=4) #CoSeg(d_reduce=128, nencoder=4, ndecoder=4, lang_model='xatten')
-m = nn.Sigmoid()
-model.to(device)
+    # Initialize the model
+    model = CoSeg_legacy(d_reduce=128, nencoder=4, ndecoder=4) 
 
-# Freeze all
-# model.encoders.vision_encoder.requires_grad_(False)
-# model.encoders.vision_projector.requires_grad_(False)
+    if glob.glob("/scratch/t.tovi/models/autoseg_legacy_xatten.pth"):
+        model.load_state_dict(torch.load("/scratch/t.tovi/models/autoseg_legacy_xatten.pth"))
+    
+    m = nn.Sigmoid()
+    model.to(device)
 
-encoder_params = [
-    model.encoders.query_embeddings,
-    model.encoders.decoder,
-]
+    # Freeze all
+    model.requires_grad_(False)
 
-decoder_params = [
-    model.reduces,
-    model.film_mul,
-    model.film_add,
-    model.decoder,
-    model.mask_head
-]
+    encoder_params = [
+        model.encoders.query_embeddings,
+        model.encoders.decoder,
+    ]
 
-for param in encoder_params + decoder_params:
-    param.requires_grad_(True)
+    decoder_params = [
+        model.reduces,
+        model.film_mul,
+        model.film_add,
+        model.decoder,
+        model.mask_head
+    ]
 
-# Define training parameters
-lr_encoder = 1e-4
-lr_decoer = 1e-4
-alpha = 0.08
-beta = 0.18
-temperature = 0.08
-num_epochs = 100
+    for param in encoder_params + decoder_params:
+        param.requires_grad_(True)
 
-# Optimizer
-# optim = AdamW(
-#     [param for param in model.parameters() if param.requires_grad],
-#     weight_decay = 1e-4
-# )
-optim = AdamW(
-    [
-        {'params': param.parameters(), "lr" : lr_encoder}
-        for param in encoder_params
-    ] +\
-    [
-        {'params': param.parameters(), "lr" : lr_decoer}
-        for param in decoder_params
-    ],
-    weight_decay = 1e-4
-)
+    # Define training parameters
+    lr = 1e-4
+    alpha = 0.08
+    beta = 0.18
+    temperature = 0.08
+    num_epochs = 100
+    multiplier = 10
 
-scheduler = CosineAnnealingLR(optim, T_max=len(data_loader), eta_min=1e-6)
-#scheduler = StepLR(optim, step_size=10, gamma=0.7)
+    # Optimizer
+    # optim = AdamW(
+    #     [param for param in model.parameters() if param.requires_grad],
+    #     weight_decay = 1e-4
+    # )
+    optim = AdamW(
+        [p for p in model.parameters() if p.requires_grad],
+        lr = lr,
+        weight_decay = 1e-5
+    )
 
-# Loss
-mask_objective = nn.BCELoss()
-mask_objective2 = dice_loss
-lang_objective = nn.CrossEntropyLoss()
+    iterations = num_epochs * len(data_loader)
+    print(f"There are in total {iterations} iterations")
+    scheduler = WarmupCosineLR(optim, warmup_epochs=int(0.2*iterations), total_epochs=iterations, eta_min=1e-7)
 
-"""## Train"""
-label_embeddings = label_embeddings.to(0)
-label_embeddings = F.normalize(label_embeddings, dim=-1)
+    # Loss
+    mask_objective = nn.BCELoss()
+    mask_objective2 = dice_loss
+    lang_objective = nn.CrossEntropyLoss()
 
-count = 0
-for _ in range(num_epochs):
-    batch_loss = 0
-    batch_l1 = 0
-    batch_l2 = 0
-    batch_l3 = 0
-    for batch in data_loader:
-        # Prepare data
-        pixel_values = batch['pixel_values'].to(device)
-        masks = batch['masks'].to(device)
-        ids = batch['ids'].to(device)
+    # Use accelerator instead
+    model, optim, data_loader, scheduler = accelerator.prepare(model, optim, data_loader, scheduler)
 
-        mask_logits, pred_embeddings = model(pixel_values)
-        pred_embeddings = F.normalize(pred_embeddings, dim=-1)
-        label_logits = pred_embeddings @ label_embeddings.T / temperature
+    """## Train"""
+    wandb.init(project="coseg", name=f"legacy_xatten_{lr}_{iterations}")
+    label_embeddings = label_embeddings.to(device)
+    label_embeddings = F.normalize(label_embeddings, dim=-1)
 
-        # Compute loss
-        mask_prob = m(mask_logits)
-        l1 = mask_objective(mask_prob, masks)
-        l2 = alpha * lang_objective(label_logits.permute(0, 2, 1), ids)
-        l3 = beta * mask_objective2(masks, mask_prob)
+    count = 0
+    current = time.time()
+    for _ in range(num_epochs):
+        batch_loss = 0
+        batch_l1 = 0
+        batch_l2 = 0
+        batch_l3 = 0
+        for batch in data_loader:
+            # Prepare data
+            pixel_values = batch['pixel_values'].to(device)
+            masks = batch['masks'].to(device)
+            ids = batch['ids'].to(device)
 
-        # Total loss
-        loss = l1 + l2 + l3
+            mask_logits, pred_embeddings = model(pixel_values)
+            pred_embeddings = F.normalize(pred_embeddings, dim=-1)
+            label_logits = pred_embeddings @ label_embeddings.T / temperature
 
-        loss.backward()
-        optim.step()
-        optim.zero_grad()
+            # Compute loss
+            mask_prob = m(mask_logits)
+            l1 = mask_objective(mask_prob, masks)
+            l2 = alpha * lang_objective(label_logits.permute(0, 2, 1), ids)
+            l3 = beta * mask_objective2(masks, mask_prob)
 
-        batch_loss += loss.detach().cpu().item()
-        batch_l1 += l1.detach().cpu().item()
-        batch_l2 += l2.detach().cpu().item()
-        batch_l3 += l3.detach().cpu().item()
+            # Total loss
+            loss = multiplier * (l1 + l2 + l3)
 
-        if (count+1) % 64 == 0:
-            print(f"Iter: {count} Avrage batch loss: {batch_loss / 64}, {batch_l1 / 64}, {batch_l2 / 64}, {batch_l3 / 64}")
-            batch_loss = 0
-            batch_l1 = 0
-            batch_l2 = 0
-            batch_l3 = 0
+            # Backward
+            #loss.backward()
+            accelerator.backward(loss)
 
-        count += 1
+            # CLIP gradient norm
+            #torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            accelerator.clip_grad_norm_(model.parameters(), 1.0)
 
-    scheduler.step()
-    print("One training epoch done")
-    torch.save(model.state_dict(), "/scratch/t.tovi/autoseg_v0.3")
+            optim.step()
+            optim.zero_grad()
+
+            batch_loss += loss.detach().cpu().item()
+            batch_l1 += l1.detach().cpu().item()
+            batch_l2 += l2.detach().cpu().item()
+            batch_l3 += l3.detach().cpu().item()
+
+            if (count+1) % 64 == 0:
+                elapsed = time.time() - current
+                info = {
+                    "Step": count,
+                    "Total loss": batch_loss / 64,
+                    "Mask loss": batch_l1 / 64,
+                    "Lang loss": batch_l2 / 64,
+                    "Dice loss": batch_l3 / 64,
+                    "Lr": scheduler.get_last_lr()[0]
+                }
+                finish_time = int(elapsed * (iterations - count) / 64)
+                fhr = finish_time // 3600
+                fmin = (finish_time % 3600) // 60
+                print(f"Iter: {count} Average batch loss: {batch_loss / 64} ETC: {fhr}:{fmin}", flush=True)
+                batch_loss = 0
+                batch_l1 = 0
+                batch_l2 = 0
+                batch_l3 = 0
+                current = time.time()
+                wandb.log(info)
+
+            count += 1
+            scheduler.step()
+
+        print("One training epoch done")
+        accelerator.wait_for_everyone()
+        accelerator.save_model(model, "/scratch/t.tovi/models/autoseg_legacy_xatten.pth")
+        #torch.save(model.state_dict(), "/scratch/t.tovi/models/autoseg_legacy_xatten.pth")
+
+if __name__ == "__main__":
+    train()

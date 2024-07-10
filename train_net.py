@@ -36,8 +36,11 @@ import yaml
 
 class WandbHook(hooks.HookBase):
 
-    def __init__(self):
+    def __init__(self, config, name="coseg_detectron"):
         self.enable = self.is_main_process()
+        if self.enable:
+            wandb.init(project="coseg", name=name)
+            wandb.config.update({"config_file": config})
 
     def is_main_process(self):
         return not dist.is_initialized() or dist.get_rank() == 0
@@ -282,11 +285,9 @@ def main(args):
     #         [hooks.EvalHook(0, lambda: trainer.test_with_TTA(cfg, trainer.model))]
     #     )
     if cfg.WANDB.ENABLE:
-        wandb.init(project="coseg")
         with open(args.config_file, 'r') as f:
             config = yaml.load(f, Loader=yaml.FullLoader)
-        wandb.config.update(config)
-        trainer.register_hooks([WandbHook()])
+        trainer.register_hooks([WandbHook(config, cfg.WANDB.NAME)])
     return trainer.train()
 
 
