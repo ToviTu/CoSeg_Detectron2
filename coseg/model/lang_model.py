@@ -136,6 +136,7 @@ class CLIPLang_xatten_legacy(nn.Module):
             nhead = nhead,
             num_encoder_layers = nencoder,
             num_decoder_layers = ndecoder,
+            dim_feedforward = 2048,
             activation = nn.GELU(),
             batch_first = True
         )

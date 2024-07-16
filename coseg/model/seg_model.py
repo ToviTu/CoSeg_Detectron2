@@ -4,7 +4,7 @@ import torch
 import numpy as np
 
 class CLIPSegDecoder(nn.Module):
-    def __init__(self, d_image=768, d_text=512, d_reduce=64, nhead=4):
+    def __init__(self, d_image=768, d_text=512, d_reduce=64, nhead=4, dropout=.1, dffn=20248):
         super().__init__()
 
         self.reduces = nn.ModuleList([
@@ -18,8 +18,8 @@ class CLIPSegDecoder(nn.Module):
                 nn.TransformerEncoderLayer(
                     d_model=d_reduce,
                     nhead=nhead,
-                    dim_feedforward=2048,
-                    dropout=0.1,
+                    dim_feedforward=dffn,
+                    dropout=dropout,
                     activation=nn.GELU(),
                     batch_first=True,
                 ),

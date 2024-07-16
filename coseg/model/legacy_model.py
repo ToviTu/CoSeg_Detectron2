@@ -239,6 +239,6 @@ class CoSeg_legacy_wrapper(nn.Module):
         # Loss
         l1, l2, l3 = self.criterion(mask_logits, label_logits, masks, ids)
 
-        loss = {"BCE": l1, "Dice": l2, "CLIP": l3}
+        loss = {"Mask loss": l1, "Dice loss": l2, "Lang loss": l3}
 
         return loss

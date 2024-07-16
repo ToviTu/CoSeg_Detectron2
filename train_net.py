@@ -128,7 +128,10 @@ class Trainer(DefaultTrainer):
         It now calls :func:`detectron2.solver.build_lr_scheduler`.
         Overwrite it if you'd like a different scheduler.
         """
-        return build_lr_scheduler(cfg, optimizer)
+        if cfg.SOLVER.LR_SCHEDULER_NAME == "Constant":
+            return torch.optim.lr_scheduler.ConstantLR(optimizer, factor=1, total_iters=cfg.SOLVER.MAX_ITER)
+        else:
+            return build_lr_scheduler(cfg, optimizer)
     
     @classmethod
     def build_model(cls, cfg):

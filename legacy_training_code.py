@@ -222,8 +222,8 @@ def train():
     # Initialize the model
     model = CoSeg_legacy(d_reduce=128, nencoder=4, ndecoder=4) 
 
-    if glob.glob("/scratch/t.tovi/models/autoseg_legacy_xatten.pth"):
-        model.load_state_dict(torch.load("/scratch/t.tovi/models/autoseg_legacy_xatten.pth"))
+    if glob.glob("/scratch/t.tovi/models/autoseg_legacy_xatten"):
+        model.load_state_dict(torch.load("/scratch/t.tovi/models/autoseg_legacy_xatten/model.safetensors"))
     
     m = nn.Sigmoid()
     model.to(device)
@@ -263,12 +263,13 @@ def train():
     optim = AdamW(
         [p for p in model.parameters() if p.requires_grad],
         lr = lr,
-        weight_decay = 1e-5
+        weight_decay = 1e-4
     )
 
     iterations = num_epochs * len(data_loader)
     print(f"There are in total {iterations} iterations")
-    scheduler = WarmupCosineLR(optim, warmup_epochs=int(0.2*iterations), total_epochs=iterations, eta_min=1e-7)
+    #scheduler = WarmupCosineLR(optim, warmup_epochs=int(0.2*iterations), total_epochs=iterations, eta_min=1e-7)
+    scheduler = CosineAnnealingLR(optim, len(data_loader), eta_min=1e-7)
 
     # Loss
     mask_objective = nn.BCELoss()
@@ -277,6 +278,7 @@ def train():
 
     # Use accelerator instead
     model, optim, data_loader, scheduler = accelerator.prepare(model, optim, data_loader, scheduler)
+    #model, optim, data_loader = accelerator.prepare(model, optim, data_loader)
 
     """## Train"""
     wandb.init(project="coseg", name=f"legacy_xatten_{lr}_{iterations}")
@@ -284,12 +286,12 @@ def train():
     label_embeddings = F.normalize(label_embeddings, dim=-1)
 
     count = 0
+    batch_loss = 0
+    batch_l1 = 0
+    batch_l2 = 0
+    batch_l3 = 0
     current = time.time()
-    for _ in range(num_epochs):
-        batch_loss = 0
-        batch_l1 = 0
-        batch_l2 = 0
-        batch_l3 = 0
+    for e in range(num_epochs):
         for batch in data_loader:
             # Prepare data
             pixel_values = batch['pixel_values'].to(device)
@@ -328,6 +330,7 @@ def train():
             if (count+1) % 64 == 0:
                 elapsed = time.time() - current
                 info = {
+                    "Epoch": e,
                     "Step": count,
                     "Total loss": batch_loss / 64,
                     "Mask loss": batch_l1 / 64,
@@ -350,8 +353,10 @@ def train():
             scheduler.step()
 
         print("One training epoch done")
-        accelerator.wait_for_everyone()
-        accelerator.save_model(model, "/scratch/t.tovi/models/autoseg_legacy_xatten.pth")
+
+    accelerator.wait_for_everyone()
+    model = accelerator.unwrap_model(model)
+    accelerator.save_model(model, "/scratch/t.tovi/models/autoseg_legacy_xatten")
         #torch.save(model.state_dict(), "/scratch/t.tovi/models/autoseg_legacy_xatten.pth")
 
 if __name__ == "__main__":
