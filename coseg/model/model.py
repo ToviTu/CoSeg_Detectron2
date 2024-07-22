@@ -10,6 +10,7 @@ from torch import nn
 import torch
 import numpy as np
 import warnings
+from safetensors.torch import load_file
 
 from transformers import CLIPProcessor
 from .seg_model import CLIPSegDecoder
@@ -73,10 +74,9 @@ class CoSeg_wrapper(nn.Module):
         )
         warnings.warn("Model initialized...but no registered vocabulary! ")
 
-        if not finetune_clip:
-            self.predictor.encoders.vision_encoder.requires_grad_(False)
-            self.predictor.encoders.vision_projector.requires_grad_(False)
-
+        if finetune_clip:
+            self.predictor.encoders.vision_model.requires_grad_(True)
+            
     @classmethod
     def from_config(self, cfg):
         return {
@@ -127,7 +127,11 @@ class CoSeg_wrapper(nn.Module):
         label_embeddings = F.normalize(label_embeddings, dim=-1)
         del lang_model
         self.label_embeddings = label_embeddings.to(self.device)
+        # Assume the last index is the unlabelled index
         self.unlabel_idx = self.label_embeddings.shape[0]-1
+    
+    def load_safetensor(self, path):
+        self.predictor.load_state_dict(load_file(path))
     
     @torch.no_grad()
     def inference(self, pixel_values, output_size):
@@ -162,22 +166,8 @@ class CoSeg_wrapper(nn.Module):
         final_mask = F.one_hot(final_mask, num_classes=self.label_embeddings.shape[0]).permute(2, 0, 1)
         
         return [{"sem_seg": final_mask, "raw": mask_probabilities, 'input': pixel_values, "ids": predicted_ids}]
-
-    def forward(self, batched_inputs):
-        images = [input['image'].to(self.device, dtype=torch.float32) for input in batched_inputs]
-        
-        # Normalization
-        pixels = [(image / 255 - self.pixel_mean.to(self.device)) / self.pixel_std.to(self.device) for image in images]
-        pixels = ImageList.from_tensors(pixels, self.size_divisibility)
-
-        # Resizing
-        pixels_resized = F.interpolate(
-            pixels.tensor, size=self.resolution, mode='bilinear', align_corners=False
-        )
-
-        if not self.training:
-            return self.inference(pixels_resized, (batched_inputs[0]['height'], batched_inputs[0]['width']))
-        
+    
+    def prepare_ground_truth(self, batched_inputs):
         # Ground Truth
         ids = [input['instances'].get_fields()['gt_classes'][:20] for input in batched_inputs]
         ids = torch.stack([F.pad(id, (0, 20-id.shape[0]), "constant", self.ignore_value) for id in ids])
@@ -187,6 +177,33 @@ class CoSeg_wrapper(nn.Module):
         masks = [input['instances'].get_fields()['gt_masks'][:20] for input in batched_inputs]
         masks = torch.stack([torch.concat([mask, torch.full((20-mask.shape[0], *mask.shape[1:]), 0, dtype=bool)]) for mask in masks]) # B L W H
         masks = masks.to(self.device, dtype=torch.float32)
+
+        return masks, ids
+    
+    def prepare_inputs(self, batched_inputs, use_processor=False):
+        images = [input['image'].to(dtype=torch.float32) for input in batched_inputs]
+
+        if use_processor:
+            return self.predictor.processor(images=images, return_tensors='pt')['pixel_values'].to(self.device)
+
+        # Normalization
+        pixels = [(image / 255 - self.pixel_mean.to(image.device)) / self.pixel_std.to(image.device) for image in images]
+        pixels = ImageList.from_tensors(pixels, self.size_divisibility)
+
+        # Resizing
+        pixels_resized = F.interpolate(
+            pixels.tensor, size=self.resolution, mode='bilinear', align_corners=False
+        )
+        return pixels_resized.to(self.device,)
+
+
+    def forward(self, batched_inputs):
+        pixels_resized = self.prepare_inputs(batched_inputs)        
+        
+        if not self.training:
+            return self.inference(pixels_resized, (batched_inputs[0]['height'], batched_inputs[0]['width']))
+        
+        masks, ids = self.prepare_ground_truth(batched_inputs)
 
         # Prediction
         mask_logits, pred_embeddings = self.predictor(pixels_resized)
@@ -198,7 +215,6 @@ class CoSeg_wrapper(nn.Module):
         l1, l2, l3 = self.criterion(mask_logits, label_logits, masks, ids)
 
         loss = {"Mask loss": l1, "Dice loss": l2, "Lang loss": l3}
-        #loss = {"loss": l1+l2+l3}
 
         return loss
         

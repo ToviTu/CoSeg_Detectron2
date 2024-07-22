@@ -41,6 +41,10 @@ class WandbHook(hooks.HookBase):
         if self.enable:
             wandb.init(project="coseg", name=name)
             wandb.config.update({"config_file": config})
+        self.map = {
+            "total_loss": "Total loss",
+            "lr" : "Lr"
+        }
 
     def is_main_process(self):
         return not dist.is_initialized() or dist.get_rank() == 0
@@ -58,9 +62,10 @@ class WandbHook(hooks.HookBase):
         if self.enable:                    
             storage = get_event_storage()
             metrics = storage.latest()
-            metrics = {k:v[0] for k,v in metrics.items()}
+            metrics = {self.map.get(k) if k in self.map else k :v[0] for k,v in metrics.items()}
+            metrics["Step"] = self.iter
 
-            if self.iter % 10 == 0:
+            if metrics["Step"] % 10 == 0:
                 wandb.log(metrics)
 
 def build_evaluator(cfg, dataset_name, output_folder=None):
@@ -141,11 +146,18 @@ class Trainer(DefaultTrainer):
         logger.info("Model:\n{}".format(model))
 
         # Register vocabulary
-        meta = MetadataCatalog.get(cfg.DATASETS.TRAIN[0])
+        if len(cfg.DATASETS.TRAIN) == 1:
+            dataset_name = cfg.DATASETS.TRAIN[0]
+        else:
+            dataset_name = cfg.DATASETS.TEST[0]
+        meta = MetadataCatalog.get(dataset_name)
         labels = meta.stuff_classes
         labels = [f"a photo of a {label}" for label in labels]
         labels.append('unlabeled')
         model.register_vocabulary(labels)
+
+        if hasattr(cfg.MODEL, "LOAD_PRETRAINED"):
+            model.load_safetensor(cfg.MODEL.LOAD_PRETRAINED)
         
         return model
 
@@ -267,7 +279,7 @@ def setup(args):
 
 def main(args):
     cfg = setup(args)
-    torch.set_float32_matmul_precision("high")
+    #torch.set_float32_matmul_precision("high")
 
     if args.eval_only:
         model = Trainer.build_model(cfg)

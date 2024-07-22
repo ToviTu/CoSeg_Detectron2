@@ -256,10 +256,6 @@ def train():
     multiplier = 10
 
     # Optimizer
-    # optim = AdamW(
-    #     [param for param in model.parameters() if param.requires_grad],
-    #     weight_decay = 1e-4
-    # )
     optim = AdamW(
         [p for p in model.parameters() if p.requires_grad],
         lr = lr,
@@ -272,13 +268,12 @@ def train():
     scheduler = CosineAnnealingLR(optim, len(data_loader), eta_min=1e-7)
 
     # Loss
-    mask_objective = nn.BCELoss()
+    mask_objective = nn.BCEWithLogitsLoss()
     mask_objective2 = dice_loss
     lang_objective = nn.CrossEntropyLoss()
 
     # Use accelerator instead
     model, optim, data_loader, scheduler = accelerator.prepare(model, optim, data_loader, scheduler)
-    #model, optim, data_loader = accelerator.prepare(model, optim, data_loader)
 
     """## Train"""
     wandb.init(project="coseg", name=f"legacy_xatten_{lr}_{iterations}")

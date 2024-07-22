@@ -3,5 +3,5 @@
 echo $HF_HOME
 
 singularity run --nv --bind /scratch,/storage1 /scratch/t.tovi/coseg.sif bash \
-    $WORKING_DIR/run_legacy_old.sh
+    $WORKING_DIR/run_legacy_new.sh
 

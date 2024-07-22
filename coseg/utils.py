@@ -8,6 +8,8 @@ import numpy as np
 from torch.optim.lr_scheduler import _LRScheduler
 import math
 
+src_dir = "/home/research/jianhong.t/OpenVocab_Seg_with_AutoRegres/src/"
+
 class COCOStuffDataset(Dataset):
     def __init__(self, image_dir, annotation_dir, img_size=224):
         """

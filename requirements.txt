@@ -6,7 +6,8 @@ wandb
 einops
 einops-exts
 transformers==4.41.2
-torch
+#torch
+git+https://github.com/pytorch/pytorch.git@v2.4.0-rc8#egg=torch # Fix the NoneType error in transformer.forward without bias
 pillow
 sentencepiece
 jupyter
